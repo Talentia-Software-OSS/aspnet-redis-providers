@@ -4,21 +4,23 @@
 //
 
 using System;
+using System.Threading.Tasks;
 using System.Web.SessionState;
 
 namespace Microsoft.Web.Redis
 {
     internal interface IRedisClientConnection
     {
-        bool Expiry(string key, int timeInSeconds);
-        object Eval(string script, string[] keyArgs, object[] valueArgs);
+        Task<bool> ExpiryAsync(string key, int timeInSeconds);
+        Task<object> EvalAsync(string script, string[] keyArgs, object[] valueArgs);
+        Task SetAsync(string key, byte[] data, DateTime utcExpiry);
+        Task<byte[]> GetAsync(string key);
+        Task RemoveAsync(string key);
+
+        ISessionStateItemCollection GetSessionData(object rowDataFromRedis);
+        byte[] GetOutputCacheDataFromResult(object rowDataFromRedis);
         string GetLockId(object rowDataFromRedis);
         int GetSessionTimeout(object rowDataFromRedis);
         bool IsLocked(object rowDataFromRedis);
-        ISessionStateItemCollection GetSessionData(object rowDataFromRedis);
-        void Set(string key, byte[] data, DateTime utcExpiry);
-        byte[] Get(string key);
-        void Remove(string key);
-        byte[] GetOutputCacheDataFromResult(object rowDataFromRedis);
     }
 }

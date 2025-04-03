@@ -10,7 +10,7 @@ using System.Security.Authentication;
 
 namespace Microsoft.Web.Redis
 {
-    internal class RedisSharedConnection
+    internal class RedisSharedConnection : IDisposable
     {
         private ProviderConfiguration _configuration;
         private ConfigurationOptions _configOption;
@@ -157,5 +157,19 @@ namespace Microsoft.Web.Redis
             }
         }
 
+        public void Dispose()
+        {
+            if (_redisMultiplexer != null && _redisMultiplexer.IsValueCreated)
+            {
+                try
+                {
+                    _redisMultiplexer.Value.Close();
+                }
+                catch (Exception)
+                {
+                    // Ignore exceptions during disposal
+                }
+            }
+        }
     }
 }

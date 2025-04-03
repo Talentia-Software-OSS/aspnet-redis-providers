@@ -12,7 +12,11 @@ namespace Microsoft.Web.Redis.FunctionalTests
 {
     internal class RedisServer : IDisposable
     {
-        Process _server;
+        private static Process _server;
+        private static int _refCount = 0;
+        private static readonly object _lockObj = new object();
+        private static bool _isServerRunning = false;
+        private bool _hasSubscribed = false;
 
         private static void WaitForRedisToStart()
         {
@@ -25,59 +29,146 @@ namespace Microsoft.Web.Redis.FunctionalTests
                     Socket socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
                     socket.Connect("localhost", 6379);
                     socket.Close();
-                    LogUtility.LogInfo("Successful started redis server after Time: {0} ms", (i+1) * 10);
-                    break;
+                    LogUtility.LogInfo("Successfully connected to Redis server after Time: {0} ms", (i+1) * 10);
+                    return;
                 }
                 catch
                 {}
+            }
+            LogUtility.LogInfo("Failed to connect to Redis server after 2 seconds");
+        }
+
+        public static bool IsRedisRunning()
+        {
+            try
+            {
+                using (Socket socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp))
+                {
+                    socket.Connect("localhost", 6379);
+                    return true;
+                }
+            }
+            catch
+            {
+                return false;
             }
         }
 
         public RedisServer()
         {
-            _server = new Process();
-            Restart();
+            lock (_lockObj)
+            {
+                if (!_isServerRunning)
+                {
+                    StartRedisServer();
+                }
+                
+                // Increment reference count
+                _refCount++;
+                _hasSubscribed = true;
+                LogUtility.LogInfo($"Redis server subscription added. Current subscribers: {_refCount}");
+            }
         }
 
-        public void Restart()
+        private static void StartRedisServer()
         {
-            KillRedisServers();
-            _server = new Process();
-            string executable_path = $"{Environment.CurrentDirectory}\\..\\..\\..\\..\\..\\redis-server.exe";
-            _server.StartInfo.FileName = executable_path;
-            _server.StartInfo.Arguments = "--maxmemory 20000000";
-            _server.StartInfo.WindowStyle = ProcessWindowStyle.Hidden;
-            _server.Start();
-            WaitForRedisToStart();
-            Thread.Sleep(2000);
+            if (_isServerRunning)
+                return;
+
+            // First check if Redis is already running
+            if (IsRedisRunning())
+            {
+                LogUtility.LogInfo("Redis server already running - using existing instance");
+                _isServerRunning = true;
+                return;
+            }
+
+            try
+            {
+                KillRedisServers(); // Make sure there are no rogue servers
+                
+                _server = new Process();
+                string executable_path = $"{Environment.CurrentDirectory}\\..\\..\\..\\..\\..\\redis-server.exe";
+                LogUtility.LogInfo($"Starting Redis server from: {executable_path}");
+                
+                _server.StartInfo.FileName = executable_path;
+                _server.StartInfo.Arguments = "--maxmemory 20000000";
+                _server.StartInfo.WindowStyle = ProcessWindowStyle.Hidden;
+                
+                // Set up redirects for log capture
+                _server.StartInfo.UseShellExecute = false;
+                _server.StartInfo.RedirectStandardOutput = true;
+                _server.StartInfo.RedirectStandardError = true;
+                
+                _server.Start();
+                WaitForRedisToStart();
+                
+                _isServerRunning = true;
+                LogUtility.LogInfo("Redis server started successfully");
+            }
+            catch (Exception ex)
+            {
+                LogUtility.LogInfo($"Failed to start Redis server: {ex.Message}");
+                _isServerRunning = false;
+                throw;
+            }
         }
 
         // Make sure that no redis-server instance is running
-        private static void KillRedisServers()
+        public static void KillRedisServers()
         {
             foreach (var proc in Process.GetProcessesByName("redis-server"))
             {
                 try
                 {
                     proc.Kill();
+                    LogUtility.LogInfo($"Killed existing Redis server process: {proc.Id}");
                 }
-                catch
+                catch (Exception ex)
                 {
+                    LogUtility.LogInfo($"Failed to kill Redis server process: {ex.Message}");
                 }
             }
         }
 
         public void Dispose()
         {
-            try
+            if (!_hasSubscribed)
+                return;
+            
+            lock (_lockObj)
             {
-                if (_server != null)
+                if (_refCount > 0)
                 {
-                    _server.Kill();
+                    _refCount--;
+                    LogUtility.LogInfo($"Redis server subscription removed. Remaining subscribers: {_refCount}");
+                }
+
+                _hasSubscribed = false;
+
+                // Only shut down the server when no more subscribers
+                if (_refCount == 0 && _isServerRunning)
+                {
+                    try
+                    {
+                        if (_server != null && !_server.HasExited)
+                        {
+                            _server.Kill();
+                            _server.Dispose();
+                            _server = null;
+                        }
+                        LogUtility.LogInfo("Redis server stopped");
+                    }
+                    catch (Exception ex)
+                    {
+                        LogUtility.LogInfo($"Error stopping Redis server: {ex.Message}");
+                    }
+                    finally
+                    {
+                        _isServerRunning = false;
+                    }
                 }
             }
-            catch
-            { }
         }
     }
 }

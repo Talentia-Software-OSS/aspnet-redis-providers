@@ -53,7 +53,7 @@ namespace Microsoft.Web.Redis
             try
             {
                 GetAccessToCacheStore();
-                return cache.Get(key);
+                return cache.GetAsync(key).GetAwaiter().GetResult();
             }
             catch(Exception e)
             {
@@ -64,7 +64,16 @@ namespace Microsoft.Web.Redis
 
         public override async Task<object> GetAsync(string key)
         {
-            return await Task.FromResult(Get(key));
+            try
+            {
+                GetAccessToCacheStore();
+                return await cache.GetAsync(key);
+            }
+            catch(Exception e)
+            {
+                LogUtility.LogError("Error in GetAsync: " + e.Message);
+                return null;
+            }
         }
 
         public override object Add(string key, object entry, DateTime utcExpiry)
@@ -72,7 +81,7 @@ namespace Microsoft.Web.Redis
             try
             {
                 GetAccessToCacheStore();
-                return cache.Add(key, entry, utcExpiry);
+                return cache.AddAsync(key, entry, utcExpiry).GetAwaiter().GetResult();
             }
             catch (Exception e)
             {
@@ -83,7 +92,16 @@ namespace Microsoft.Web.Redis
 
         public override async Task<object> AddAsync(string key, object entry, DateTime utcExpiry)
         {
-            return await Task.FromResult(Add(key, entry, utcExpiry));
+            try
+            {
+                GetAccessToCacheStore();
+                return await cache.AddAsync(key, entry, utcExpiry);
+            }
+            catch (Exception e)
+            {
+                LogUtility.LogError("Error in AddAsync: " + e.Message);
+                return null;
+            }
         }
 
         public override void Set(string key, object entry, DateTime utcExpiry)
@@ -91,7 +109,7 @@ namespace Microsoft.Web.Redis
             try
             {
                 GetAccessToCacheStore();
-                cache.Set(key, entry, utcExpiry);
+                cache.SetAsync(key, entry, utcExpiry).GetAwaiter().GetResult();
             }
             catch (Exception e)
             {
@@ -101,8 +119,15 @@ namespace Microsoft.Web.Redis
 
         public override async Task SetAsync(string key, object entry, DateTime utcExpiry)
         {
-            Set(key, entry, utcExpiry);
-            await Task.FromResult(0);
+            try
+            {
+                GetAccessToCacheStore();
+                await cache.SetAsync(key, entry, utcExpiry);
+            }
+            catch (Exception e)
+            {
+                LogUtility.LogError("Error in SetAsync: " + e.Message);
+            }
         }
 
         public override void Remove(string key)
@@ -110,7 +135,7 @@ namespace Microsoft.Web.Redis
             try
             {
                 GetAccessToCacheStore();
-                cache.Remove(key);
+                cache.RemoveAsync(key).GetAwaiter().GetResult();
             }
             catch (Exception e)
             {
@@ -120,8 +145,15 @@ namespace Microsoft.Web.Redis
 
         public override async Task RemoveAsync(string key)
         {
-            Remove(key);
-            await Task.FromResult(0);
+            try
+            {
+                GetAccessToCacheStore();
+                await cache.RemoveAsync(key);
+            }
+            catch (Exception e)
+            {
+                LogUtility.LogError("Error in RemoveAsync: " + e.Message);
+            }
         }
 
         private void GetAccessToCacheStore()

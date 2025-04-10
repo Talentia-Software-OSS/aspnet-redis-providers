@@ -865,7 +865,7 @@ namespace Microsoft.Web.Redis.FunctionalTests
 
         private IDatabase GetRealRedisConnection(RedisConnectionWrapper redisConn)
         {
-            return RedisConnectionWrapper.sharedConnection.Connection;
+            return RedisConnectionWrapper.sharedConnection.Multiplexer.Database;
         }
     }
 }

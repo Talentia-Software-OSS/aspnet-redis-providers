@@ -159,10 +159,11 @@ namespace Microsoft.Web.Redis.FunctionalTests
 
         private IDatabase GetRealRedisConnection()
         {
-            return RedisConnectionWrapper.sharedConnection.Connection;
+            return RedisConnectionWrapper.sharedConnection.Multiplexer.Database;
         }
 
-        [Fact(Skip = "Only used to evaluate performance")]
+        //[Fact(Skip = "Only used to evaluate performance")]
+        [Fact]
         public async Task TestThroughputAsync()
         {
             // Test to compare efficiency between code changes; reads and writes 10000 items to Redis
@@ -178,7 +179,7 @@ namespace Microsoft.Web.Redis.FunctionalTests
             // Get actual connection and varify lock and session timeout
             IDatabase actualConnection = GetRealRedisConnection();
             Assert.Equal(data.LockId.ToString(), actualConnection.StringGet(ssp.cache.Keys.LockKey).ToString());
-            Assert.Equal(((int)RedisSessionStateProvider.configuration.SessionTimeout.TotalSeconds).ToString(), actualConnection.HashGet(ssp.cache.Keys.InternalKey, "SessionTimeout").ToString());
+            Assert.Equal(((int)RedisSessionStateProvider.configuration.SessionTimeout.TotalSeconds).ToString(), actualConnection.StringGet(ssp.cache.Keys.InternalKey).ToString());
 
             var watch = new System.Diagnostics.Stopwatch();
 

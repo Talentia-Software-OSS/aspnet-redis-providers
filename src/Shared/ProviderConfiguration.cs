@@ -28,6 +28,7 @@ namespace Microsoft.Web.Redis
         public int ConnectionTimeoutInMilliSec { get; set; }
         public int OperationTimeoutInMilliSec { get; set; }
         public string ConnectionString { get; set; }
+        public int ConnectionPoolSize { get; set; }
 
         /* Empty constructor required for testing */
 
@@ -77,6 +78,7 @@ namespace Microsoft.Web.Redis
         private ProviderConfiguration(NameValueCollection config)
         {
             EnableLoggingIfParametersAvailable(config);
+            ConnectionPoolSize = GetIntSettings(config, "ConnectionPoolSize", 5);
             // Get connection host, port and password.
             // host, port, accessKey and ssl are firest fetched from appSettings if not found there than taken from web.config
             ConnectionString = GetConnectionString(config);

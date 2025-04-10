@@ -26,14 +26,22 @@ namespace Microsoft.Web.Redis
         // This is used just by tests
         public IDatabase RealConnection
         {
-            get { return _sharedConnection.Connection; }
+            get { return _sharedConnection.Multiplexer.Database; }
         }
+
+        public ConnectionMultiplexerWrapper Multiplexer => _sharedConnection.Multiplexer;
+
 
         public async Task<bool> ExpiryAsync(string key, int timeInSeconds)
         {
             TimeSpan timeSpan = new TimeSpan(0, 0, timeInSeconds);
             RedisKey redisKey = key;
-            return (bool)await RetryLogicAsync(async () => await RealConnection.KeyExpireAsync(redisKey, timeSpan));
+            return (bool)await RetryLogicAsync(Multiplexer, async (mx) => await  mx.Database.KeyExpireAsync(redisKey, timeSpan));
+        }
+
+        public async Task<object> EvalAsync(LoadedLuaScript script, object args)
+        {
+            return await RetryLogicAsync(Multiplexer, async (mx) => await script.EvaluateAsync(Multiplexer.Database,args));
         }
 
         public async Task<object> EvalAsync(string script, string[] keyArgs, object[] valueArgs)
@@ -63,32 +71,32 @@ namespace Microsoft.Web.Redis
                 }
                 i++;
             }
-            return await RetryLogicAsync(async () => await RealConnection.ScriptEvaluateAsync(script, redisKeyArgs, redisValueArgs));
+            return await RetryLogicAsync(Multiplexer, async (mx) => await mx.Database.ScriptEvaluateAsync(script, redisKeyArgs, redisValueArgs));
         }
 
-        private async Task<object> OperationExecutorAsync(Func<Task<object>> redisOperation)
+
+        private async Task<object> OperationExecutorAsync(ConnectionMultiplexerWrapper multiplexer, Func<ConnectionMultiplexerWrapper, Task<object>> redisOperation)
         {
             try
             {
-                return await redisOperation();
+                return await redisOperation(multiplexer);
             }
             catch (ObjectDisposedException)
             {
                 // Try once as this can be caused by force reconnect by closing multiplexer
-                return await redisOperation();
+                return await redisOperation(multiplexer);
             }
             catch (RedisConnectionException)
             {
-                // Try once after reconnect
-                _sharedConnection.ForceReconnect();
-                return await redisOperation();
+                multiplexer.ForceReconnect();
+                return await redisOperation(multiplexer);
             }
             catch (Exception e)
             {
                 if (e.Message.Contains("NOSCRIPT"))
                 {
                     // Second call should pass if it was script not found issue
-                    return await redisOperation();
+                    return await redisOperation(multiplexer);
                 }
                 throw;
             }
@@ -98,7 +106,7 @@ namespace Microsoft.Web.Redis
         /// Async version of RetryLogic
         /// If retry timout is provide than we will retry first time after 20 ms and after that every 1 sec till retry timout is expired or we get value.
         /// </summary>
-        private async Task<object> RetryLogicAsync(Func<Task<object>> redisOperation)
+        private async Task<object> RetryLogicAsync(ConnectionMultiplexerWrapper connection, Func<ConnectionMultiplexerWrapper, Task<object>> redisOperation)
         {
             int timeToSleepBeforeRetryInMiliseconds = 20;
             DateTime startTime = DateTime.Now;
@@ -106,7 +114,7 @@ namespace Microsoft.Web.Redis
             {
                 try
                 {
-                    return await OperationExecutorAsync(redisOperation);
+                    return await OperationExecutorAsync(connection, redisOperation);
                 }
                 catch (Exception e)
                 {
@@ -158,6 +166,11 @@ namespace Microsoft.Web.Redis
             return (bool)lockScriptReturnValueArray[3];
         }
 
+        public LoadedLuaScript LoadLuaScript(LuaScript script)
+        {
+            throw new NotImplementedException();
+        }
+
         public string GetLockId(object rowDataFromRedis)
         {
             RedisResult rowDataAsRedisResult = (RedisResult)rowDataFromRedis;
@@ -205,9 +218,9 @@ namespace Microsoft.Web.Redis
             RedisKey redisKey = key;
             RedisValue redisValue = data;
             TimeSpan timeSpanForExpiry = utcExpiry - DateTime.UtcNow;
-            await OperationExecutorAsync(async () => 
+            await OperationExecutorAsync(Multiplexer,async (mx) =>
             {
-                await RealConnection.StringSetAsync(redisKey, redisValue, timeSpanForExpiry);
+                await mx.Database.StringSetAsync(redisKey, redisValue, timeSpanForExpiry);
                 return (object)true; // Return value needed for the method signature
             });
         }
@@ -215,16 +228,16 @@ namespace Microsoft.Web.Redis
         public async Task<byte[]> GetAsync(string key)
         {
             RedisKey redisKey = key;
-            RedisValue redisValue = (RedisValue)await OperationExecutorAsync(async () => await RealConnection.StringGetAsync(redisKey));
+            RedisValue redisValue = (RedisValue)await OperationExecutorAsync(Multiplexer,async (mx) => await mx.Database.StringGetAsync(redisKey));
             return (byte[])redisValue;
         }
 
         public async Task RemoveAsync(string key)
         {
             RedisKey redisKey = key;
-            await OperationExecutorAsync(async () => 
+            await OperationExecutorAsync(Multiplexer,async (mx) =>
             {
-                await RealConnection.KeyDeleteAsync(redisKey);
+                await mx.Database.KeyDeleteAsync(redisKey);
                 return (object)true; // Return value needed for the method signature
             });
         }

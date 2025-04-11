@@ -8,6 +8,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using System.Web.SessionState;
+using StackExchange.Redis;
 
 namespace Microsoft.Web.Redis
 {
@@ -21,6 +22,13 @@ namespace Microsoft.Web.Redis
 
         internal IRedisClientConnection redisConnection;
         private ProviderConfiguration configuration;
+
+        private LoadedLuaScript UpdateExpiryTimeLoadScript;
+        private LoadedLuaScript SetLoadedScript;
+        private LoadedLuaScript WriteLockAndGetDataLoadedScript;
+        private LoadedLuaScript ReadLockAndGetDataLoadedScript;
+        private LoadedLuaScript ReleaseWriteLockIfLockMatchLoadedScript;
+        private LoadedLuaScript RemoveSessionLoadedScript;
 
         public RedisConnectionWrapper(ProviderConfiguration configuration, string id)
         {
@@ -38,6 +46,19 @@ namespace Microsoft.Web.Redis
                 connectionRefCount++;
             }
             redisConnection = new StackExchangeClientConnection(configuration, sharedConnection);
+
+            PrepareLoadedScripts();
+        }
+
+        private void PrepareLoadedScripts()
+        {
+            UpdateExpiryTimeLoadScript = redisConnection.LoadLuaScript(UpdateExpiryTimePreparedScript);
+            SetLoadedScript = redisConnection.LoadLuaScript(SetScriptPrepared);
+            WriteLockAndGetDataLoadedScript = redisConnection.LoadLuaScript(WriteLockAndGetDataPreparedScript);
+            ReadLockAndGetDataLoadedScript = redisConnection.LoadLuaScript(ReadLockAndGetDataPrepared);
+            ReleaseWriteLockIfLockMatchLoadedScript = redisConnection.LoadLuaScript(ReleaseWriteLockIfLockMatchPreparedScript);
+            RemoveSessionLoadedScript = redisConnection.LoadLuaScript(RemoveSessionPreparedScript);
+
         }
 
         // This method will be called by tests to ensure proper cleanup
@@ -76,7 +97,7 @@ namespace Microsoft.Web.Redis
                 {
                     connectionRefCount--;
                 }
-                
+
                 if (connectionRefCount == 0 && sharedConnection != null)
                 {
                     // We're the last one using this connection, let's clean up
@@ -126,13 +147,45 @@ namespace Microsoft.Web.Redis
                 return 1"
                 );
 
+        private const string UpdateExpiryTimeScriptConstant = (@"
+                local dataExists = redis.call('EXISTS', @dataKey)
+                if dataExists == 0 then
+                    return 1;
+                end
+
+                local SessionTimeout = redis.call('GET', @internalKey)
+                if SessionTimeout ~= false then
+                    redis.call('EXPIRE',@dataKey, SessionTimeout)
+                    redis.call('EXPIRE',@internalKey, SessionTimeout)
+                else
+                    redis.call('EXPIRE', @dataKey,@timeToExpireInSeconds)
+                    redis.call('SET',@internalKey, @timeToExpireInSeconds)
+                    redis.call('EXPIRE',@internalKey,@timeToExpireInSeconds)
+                end
+                return 1"
+            );
+
+        public static readonly LuaScript UpdateExpiryTimePreparedScript = LuaScript.Prepare(UpdateExpiryTimeScriptConstant);
+
+
+
         public async Task UpdateExpiryTimeAsync(int timeToExpireInSeconds)
         {
-            string[] keyArgs = new string[] { Keys.DataKey, Keys.InternalKey };
-            object[] valueArgs = new object[1];
-            valueArgs[0] = timeToExpireInSeconds;
+            //string[] keyArgs = new string[] { Keys.DataKey, Keys.InternalKey };
+            //object[] valueArgs = new object[1];
+            //valueArgs[0] = timeToExpireInSeconds;
+            //await redisConnection.EvalAsync(updateExpiryTimeScript, keyArgs, valueArgs);
+            //string[] keyArgs = new string[] { Keys.DataKey, Keys.InternalKey };
+            //object[] valueArgs = new object[1];
+            //valueArgs[0] = timeToExpireInSeconds;
+            var input = new
+            {
+                dataKey = Keys.DataKey,
+                internalKey = Keys.InternalKey,
+                timeToExpireInSeconds = timeToExpireInSeconds.ToString()
+            };
 
-            await redisConnection.EvalAsync(updateExpiryTimeScript, keyArgs, valueArgs);
+            await redisConnection.EvalAsync(UpdateExpiryTimeLoadScript, input);
         }
 
         /*-------End of UpdateExpiryTime operation-----------------------------------------------------------------------------------------------------------------------------------------------*/
@@ -150,17 +203,32 @@ namespace Microsoft.Web.Redis
                 return 1"
                 );
 
-        private bool SetPrepare(ISessionStateItemCollection data, int sessionTimeout, out string[] keyArgs, out object[] valueArgs)
+        private static readonly string SetScriptConstant = (@"
+                redis.call('SET', @DataKey, @SerializedSessionStateItemCollection)
+                redis.call('EXPIRE',@DataKey,@SessionTimeout)
+                redis.call('SET',@InternalKey, @SessionTimeout)
+                redis.call('EXPIRE',@InternalKey,@SessionTimeout)
+                return 1"
+            );
+
+        public static readonly LuaScript SetScriptPrepared = LuaScript.Prepare(SetScriptConstant);
+
+
+        private bool SetPrepare(ISessionStateItemCollection data, int sessionTimeout, out object arg)
         {
-            keyArgs = null;
-            valueArgs = null;
+            arg = null;
             try
             {
                 byte[] serializedSessionStateItemCollection = SerializeSessionStateItemCollection(data);
 
-                keyArgs = new string[] { Keys.DataKey, Keys.InternalKey };
+                arg = new
+                {
+                    DataKey = Keys.DataKey,
+                    InternalKey = Keys.InternalKey,
+                    SerializedSessionStateItemCollection = serializedSessionStateItemCollection,
+                    SessionTimeout = sessionTimeout
+                };
 
-                valueArgs = new object[] { serializedSessionStateItemCollection, sessionTimeout };
                 return true;
             }
             catch
@@ -184,11 +252,9 @@ namespace Microsoft.Web.Redis
 
         public async Task SetAsync(ISessionStateItemCollection data, int sessionTimeout)
         {
-            string[] keyArgs;
-            object[] valueArgs;
-            if (SetPrepare(data, sessionTimeout, out keyArgs, out valueArgs))
+            if (SetPrepare(data, sessionTimeout, out var arg))
             {
-                await redisConnection.EvalAsync(setScript, keyArgs, valueArgs);
+                await redisConnection.EvalAsync(SetLoadedScript, arg);
             }
         }
 
@@ -201,27 +267,27 @@ namespace Microsoft.Web.Redis
         // lockValue = 1) (Initially) write lock value that we want to set (ARGV[1]) if we get lock successfully this will return as retArray[1]
         //             2) If another write lock exists than its lock value from cache
         // retArray = {lockValue , session data if lock was taken successfully, session timeout value if exists, wheather lock was taken or not}
-        private static readonly string writeLockAndGetDataScript = (@"
-                local retArray = {}
-                local lockValue = ARGV[1]
-                local locked = redis.call('SETNX',KEYS[1],ARGV[1])
+        private static readonly string writeLockAndGetDataConstatn = (@"
+                 local retArray = {}
+                local lockValue = @ExpectedLockId
+                local locked = redis.call('SETNX',@LockKey,@ExpectedLockId)
                 local IsLocked = true
 
                 if locked == 0 then
-                    lockValue = redis.call('GET',KEYS[1])
+                    lockValue = redis.call('GET',@LockKey)
                 else
-                    redis.call('EXPIRE',KEYS[1],ARGV[2])
+                    redis.call('EXPIRE',@LockKey,@LockTimeout)
                     IsLocked = false
                 end
 
                 retArray[1] = lockValue
-                if lockValue == ARGV[1] then retArray[2] = redis.call('GET',KEYS[2]) else retArray[2] = '' end
+                if lockValue == @ExpectedLockId then retArray[2] = redis.call('GET',@DataKey) else retArray[2] = '' end
 
-                local SessionTimeout = redis.call('GET',KEYS[3])
+                local SessionTimeout = redis.call('GET',@InternalKey)
                 if SessionTimeout ~= false then
                     retArray[3] = SessionTimeout
-                    redis.call('EXPIRE',KEYS[2], SessionTimeout)
-                    redis.call('EXPIRE',KEYS[3], SessionTimeout)
+                    redis.call('EXPIRE',@DataKey, SessionTimeout)
+                    redis.call('EXPIRE',@InternalKey, SessionTimeout)
                 else
                     retArray[3] = '-1'
                 end
@@ -230,13 +296,26 @@ namespace Microsoft.Web.Redis
                 return retArray
                 ");
 
+        public static readonly LuaScript WriteLockAndGetDataPreparedScript = LuaScript.Prepare(writeLockAndGetDataConstatn);
+
+
         public async Task<(bool Success, object LockId, ISessionStateItemCollection Data, int SessionTimeout)> TryTakeWriteLockAndGetDataAsync(DateTime lockTime, int lockTimeout)
         {
             string expectedLockId = lockTime.Ticks.ToString();
             string[] keyArgs = new string[] { Keys.LockKey, Keys.DataKey, Keys.InternalKey };
             object[] valueArgs = new object[] { expectedLockId, lockTimeout };
 
-            object rowDataFromRedis = await redisConnection.EvalAsync(writeLockAndGetDataScript, keyArgs, valueArgs);
+            var args = new
+            {
+                LockKey = Keys.LockKey,
+                DataKey = Keys.DataKey,
+                InternalKey = Keys.InternalKey,
+                ExpectedLockId = expectedLockId,
+                LockTimeout = lockTimeout.ToString()
+            };
+
+            object rowDataFromRedis = await redisConnection.EvalAsync(WriteLockAndGetDataLoadedScript, args);
+                //await redisConnection.EvalAsync(writeLockAndGetDataConstatn, keyArgs, valueArgs);
 
             object lockId = redisConnection.GetLockId(rowDataFromRedis);
             int sessionTimeout = redisConnection.GetSessionTimeout(rowDataFromRedis);
@@ -249,7 +328,7 @@ namespace Microsoft.Web.Redis
                 success = true;
                 data = redisConnection.GetSessionData(rowDataFromRedis);
             }
-            
+
             return (success, lockId, data, sessionTimeout);
         }
 
@@ -279,12 +358,43 @@ namespace Microsoft.Web.Redis
                     return retArray
                     ");
 
+        private const string ReadLockAndGetDataConst = (@"
+                 local retArray = {}
+                 local lockValue = ''
+                 local writeLockValue = redis.call('GET',@LockKey)
+                 if writeLockValue ~= false then
+                    lockValue = writeLockValue
+                 end
+                 retArray[1] = lockValue
+                 if lockValue == '' then retArray[2] = redis.call('GET',@DataKey) else retArray[2] = '' end
+
+                 local SessionTimeout = redis.call('GET', @InternalKey)
+                 if SessionTimeout ~= false then
+                     retArray[3] = SessionTimeout
+                     redis.call('EXPIRE',@DataKey, SessionTimeout)
+                     redis.call('EXPIRE',@InternalKey, SessionTimeout)
+                 else
+                     retArray[3] = '-1'
+                 end
+                 return retArray
+                 ");
+
+        public static readonly LuaScript ReadLockAndGetDataPrepared = LuaScript.Prepare(ReadLockAndGetDataConst);
+
+
         public async Task<(bool Success, object LockId, ISessionStateItemCollection Data, int SessionTimeout)> TryCheckWriteLockAndGetDataAsync()
         {
             string[] keyArgs = new string[] { Keys.LockKey, Keys.DataKey, Keys.InternalKey };
             object[] valueArgs = new object[] { };
 
-            object rowDataFromRedis = await redisConnection.EvalAsync(readLockAndGetDataScript, keyArgs, valueArgs);
+            var args = new
+            {
+                LockKey = Keys.LockKey,
+                DataKey = Keys.DataKey,
+                InternalKey = Keys.InternalKey
+            };
+
+            object rowDataFromRedis = await redisConnection.EvalAsync(ReadLockAndGetDataLoadedScript, args);
 
             object lockId = redisConnection.GetLockId(rowDataFromRedis);
             int sessionTimeout = redisConnection.GetSessionTimeout(rowDataFromRedis);
@@ -298,7 +408,7 @@ namespace Microsoft.Web.Redis
                 success = true;
                 data = redisConnection.GetSessionData(rowDataFromRedis);
             }
-            
+
             return (success, lockId, data, sessionTimeout);
         }
 
@@ -309,7 +419,15 @@ namespace Microsoft.Web.Redis
         {
             string[] keyArgs = { Keys.LockKey, Keys.DataKey, Keys.InternalKey };
             object[] valueArgs = { lockId, sessionTimeout };
-            await redisConnection.EvalAsync(releaseWriteLockIfLockMatchScript, keyArgs, valueArgs);
+            var args = new
+            {
+                LockKey = Keys.LockKey,
+                DataKey = Keys.DataKey,
+                InternalKey = Keys.InternalKey,
+                ExpectedLockId = lockId.ToString(),
+                SessionTimeout = sessionTimeout.ToString()
+            };
+            await redisConnection.EvalAsync(ReleaseWriteLockIfLockMatchLoadedScript, args);
         }
 
         // KEYS[1] = write-lock-id, KEYS[2] = data-id, KEYS[3] = internal-id
@@ -329,6 +447,24 @@ namespace Microsoft.Web.Redis
                 return 1
                 ");
 
+        private static readonly string ReleaseWriteLockIfLockMatchConst = (@"
+                local writeLockValueFromCache = redis.call('GET',@LockKey)
+                if writeLockValueFromCache == @ExpectedLockId then
+                    redis.call('DEL',@LockKey)
+                end
+                local SessionTimeout = redis.call('GET', @InternalKey)
+                if SessionTimeout ~= false then
+                    redis.call('EXPIRE',@DataKey, SessionTimeout)
+                    redis.call('EXPIRE',@InternalKey, SessionTimeout)
+                else
+                    redis.call('EXPIRE',@DataKey,@SessionTimeout)
+                end
+                return 1
+                ");
+
+        public static readonly LuaScript ReleaseWriteLockIfLockMatchPreparedScript = LuaScript.Prepare(ReleaseWriteLockIfLockMatchConst);
+
+
         /*-------End of Lock release operation-----------------------------------------------------------------------------------------------------------------------------------------------*/
 
         // KEYS = { write-lock-id, data-id, internal-id}
@@ -345,6 +481,20 @@ namespace Microsoft.Web.Redis
                 redis.call('DEL',KEYS[1])
                 ");
 
+        private static readonly string RemoveSessionConst = (@"
+                if @ExpectedLockId ~= '' then
+                    local lockValue = redis.call('GET',@LockKey)
+                    if lockValue ~=  @ExpectedLockId then
+                        return 1
+                    end
+                end
+                redis.call('DEL',@DataKey)
+                redis.call('DEL',@InternalKey)
+                redis.call('DEL',@LockKey)
+                ");
+
+        public static readonly LuaScript RemoveSessionPreparedScript = LuaScript.Prepare(RemoveSessionConst);
+
         public async Task RemoveAndReleaseLockAsync(object lockId)
         {
             // If lockId is null, don't perform the remove operation
@@ -355,7 +505,16 @@ namespace Microsoft.Web.Redis
 
             string[] keyArgs = { Keys.LockKey, Keys.DataKey, Keys.InternalKey };
             object[] valueArgs = { lockId.ToString() };
-            await redisConnection.EvalAsync(removeSessionScript, keyArgs, valueArgs);
+
+            var args = new
+            {
+                LockKey = Keys.LockKey,
+                DataKey = Keys.DataKey,
+                InternalKey = Keys.InternalKey,
+                ExpectedLockId = lockId.ToString()
+            };
+
+            await redisConnection.EvalAsync(RemoveSessionLoadedScript, args);
         }
 
         /*-------Start of TryUpdate operation-----------------------------------------------------------------------------------------------------------------------------------------------*/
@@ -403,6 +562,23 @@ namespace Microsoft.Web.Redis
                 valueArgs[5] = noOfItemsUpdated;
                 valueArgs[6] = noOfItemsRemoved + 9; // first item updated will be next to last item removed
                 valueArgs[7] = list.Count + 8; // index for last item in list in LUA
+
+                var args = new
+                {
+                    LockKey = Keys.LockKey,
+                    DataKey = Keys.DataKey,
+                    InternalKey = Keys.InternalKey,
+                    ExpectedLockId = lockId?.ToString() ?? "",
+                    SessionTimeout = sessionTimeout,
+                    NoOfItemsRemoved = noOfItemsRemoved,
+                    FirstItemDelete = 9,
+                    LastItemDelete = noOfItemsRemoved + 8,
+                    NoOfItemsUpdated = noOfItemsUpdated,
+                    FirstItemUpdate = noOfItemsRemoved + 9,
+                    LastItemUpdate = list.Count + 8
+                };
+
+
 
                 // if nothing is changed in session then also execute update script to update session timeout
                 if (list.Count != 0)

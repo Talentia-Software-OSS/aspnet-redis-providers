@@ -43,6 +43,7 @@ namespace Microsoft.Web.Redis
             }
             else
             {
+                //Note: one endpoint is supported for LoadedLuaScript. See Server property
                 if (configuration.Port == 0)
                 {
                     _configOption.EndPoints.Add(configuration.Host);
@@ -81,6 +82,8 @@ namespace Microsoft.Web.Redis
         {
             get { return _redisMultiplexer.Value.GetDatabase(_configOption.DefaultDatabase ?? _configuration.DatabaseId); }
         }
+
+        public IServer Server => _redisMultiplexer.Value.GetServers()[0];
 
         public void ForceReconnect()
         {

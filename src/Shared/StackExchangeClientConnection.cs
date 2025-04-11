@@ -36,6 +36,11 @@ namespace Microsoft.Web.Redis
             return (bool)await RetryLogicAsync(async () => await RealConnection.KeyExpireAsync(redisKey, timeSpan));
         }
 
+        public async Task<object> EvalAsync(LoadedLuaScript script, object args)
+        {
+            return await RetryLogicAsync(async () => await script.EvaluateAsync(RealConnection, args));
+        }
+
         public async Task<object> EvalAsync(string script, string[] keyArgs, object[] valueArgs)
         {
             RedisKey[] redisKeyArgs = new RedisKey[keyArgs.Length];
@@ -158,6 +163,9 @@ namespace Microsoft.Web.Redis
             return (bool)lockScriptReturnValueArray[3];
         }
 
+        public LoadedLuaScript LoadLuaScript(LuaScript script) => script.Load(_sharedConnection.Server);
+
+
         public string GetLockId(object rowDataFromRedis)
         {
             RedisResult rowDataAsRedisResult = (RedisResult)rowDataFromRedis;
@@ -205,7 +213,7 @@ namespace Microsoft.Web.Redis
             RedisKey redisKey = key;
             RedisValue redisValue = data;
             TimeSpan timeSpanForExpiry = utcExpiry - DateTime.UtcNow;
-            await OperationExecutorAsync(async () => 
+            await OperationExecutorAsync(async () =>
             {
                 await RealConnection.StringSetAsync(redisKey, redisValue, timeSpanForExpiry);
                 return (object)true; // Return value needed for the method signature
@@ -222,7 +230,7 @@ namespace Microsoft.Web.Redis
         public async Task RemoveAsync(string key)
         {
             RedisKey redisKey = key;
-            await OperationExecutorAsync(async () => 
+            await OperationExecutorAsync(async () =>
             {
                 await RealConnection.KeyDeleteAsync(redisKey);
                 return (object)true; // Return value needed for the method signature

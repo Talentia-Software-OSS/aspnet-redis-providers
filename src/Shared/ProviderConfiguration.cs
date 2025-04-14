@@ -124,7 +124,7 @@ namespace Microsoft.Web.Redis
             ConnectionTimeoutInMilliSec = GetIntSettings(config, "connectionTimeoutInMilliseconds", 0);
             OperationTimeoutInMilliSec = GetIntSettings(config, "operationTimeoutInMilliseconds", 0);
 
-            ConnectionPoolSize = GetIntSettings(config, "ConnectionPoolSize", 2);
+            ConnectionPoolSize = GetIntSettings(config, "ConnectionPoolSize", 1);
             SocketThreads = GetIntSettings(config, "SocketThreads", DefaultSocketThreads); //StackExchange.Redis default is 10
             SocketManagerOptions = GetIntSettings(config, "SocketManagerOptions", DefaultSocketManagerOptions); 
         }

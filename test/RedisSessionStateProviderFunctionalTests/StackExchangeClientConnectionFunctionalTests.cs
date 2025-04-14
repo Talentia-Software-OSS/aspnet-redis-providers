@@ -48,9 +48,11 @@ namespace Microsoft.Web.Redis.FunctionalTests
         private StackExchangeClientConnection GetStackExchangeClientConnection(ProviderConfiguration configuration)
         {
             var sharedConnection = new RedisSharedConnection(configuration);
+            KeyGenerator keys = new KeyGenerator("123", "AppName");
+            
             try
             {
-                return new StackExchangeClientConnection(configuration, sharedConnection);
+                return new StackExchangeClientConnection(configuration, sharedConnection, keys);
             }
             catch
             {

@@ -1,24 +1,23 @@
 ﻿using System;
 using System.Threading;
-using Microsoft.Web.Redis;
 using StackExchange.Redis;
 
 namespace Microsoft.Web.Redis
 {
-    public class ConnectionMultiplexerWrapper
+    public class ConnectionMultiplexerWrapper : IDisposable
     {
-        private static TimeSpan ReconnectFrequency = TimeSpan.FromSeconds(60);
-        private static TimeSpan ReconnectErrorThreshold = TimeSpan.FromSeconds(30);
+        private static TimeSpan _reconnectFrequency = TimeSpan.FromSeconds(60);
+        private static TimeSpan _reconnectErrorThreshold = TimeSpan.FromSeconds(30);
 
-        private ConfigurationOptions _configOption;
-        private ProviderConfiguration _configuration;
+        private readonly ConfigurationOptions _configOption;
+        private readonly ProviderConfiguration _configuration;
         private Lazy<ConnectionMultiplexer> _redisMultiplexer;
-        private DateTimeOffset _lastReconnectTime = DateTimeOffset.MinValue;
         private DateTimeOffset _firstErrorTime = DateTimeOffset.MinValue;
         private DateTimeOffset _previousErrorTime = DateTimeOffset.MinValue;
-        private int _id;
-        private object reconnectLock = new object();
-        private ReaderWriterLockSlim _multiplexerLock = new ReaderWriterLockSlim();
+        private DateTimeOffset _lastReconnectTime;
+        private readonly int _id;
+        private readonly object reconnectLock = new object();
+        private readonly ReaderWriterLockSlim _multiplexerLock = new ReaderWriterLockSlim();
 
         internal ConnectionMultiplexerWrapper(ProviderConfiguration configuration, ConfigurationOptions configOption,
             int id)
@@ -52,14 +51,14 @@ namespace Microsoft.Web.Redis
             var elapsedSinceLastReconnect = DateTimeOffset.UtcNow - previousReconnect;
 
             // If multiple threads call ForceReconnect at the same time, we only want to honor one of them. 
-            if (elapsedSinceLastReconnect > ReconnectFrequency)
+            if (elapsedSinceLastReconnect > _reconnectFrequency)
             {
                 lock (reconnectLock)
                 {
                     var utcNow = DateTimeOffset.UtcNow;
                     elapsedSinceLastReconnect = utcNow - _lastReconnectTime;
 
-                    if (elapsedSinceLastReconnect < ReconnectFrequency)
+                    if (elapsedSinceLastReconnect < _reconnectFrequency)
                     {
                         return; // Some other thread made it through the check and the lock, so nothing to do. 
                     }
@@ -76,14 +75,14 @@ namespace Microsoft.Web.Redis
                     var elapsedSinceMostRecentError = utcNow - _previousErrorTime;
                     _previousErrorTime = utcNow;
 
-                    if ((elapsedSinceFirstError >= ReconnectErrorThreshold) &&
-                        (elapsedSinceMostRecentError <= ReconnectErrorThreshold))
+                    if ((elapsedSinceFirstError >= _reconnectErrorThreshold) &&
+                        (elapsedSinceMostRecentError <= _reconnectErrorThreshold))
                     {
                         LogUtility.LogInfo($"Multiplexer {_id} ForceReconnect: now: {utcNow.ToString()}");
                         LogUtility.LogInfo(
-                            $"Multiplexer {_id} ForceReconnect: elapsedSinceLastReconnect: {elapsedSinceLastReconnect.ToString()}, ReconnectFrequency: {ReconnectFrequency.ToString()}");
+                            $"Multiplexer {_id} ForceReconnect: elapsedSinceLastReconnect: {elapsedSinceLastReconnect.ToString()}, ReconnectFrequency: {_reconnectFrequency.ToString()}");
                         LogUtility.LogInfo(
-                            $"Multiplexer {_id} ForceReconnect: elapsedSinceFirstError: {elapsedSinceFirstError.ToString()}, elapsedSinceMostRecentError: {elapsedSinceMostRecentError.ToString()}, ReconnectErrorThreshold: {ReconnectErrorThreshold.ToString()}");
+                            $"Multiplexer {_id} ForceReconnect: elapsedSinceFirstError: {elapsedSinceFirstError.ToString()}, elapsedSinceMostRecentError: {elapsedSinceMostRecentError.ToString()}, ReconnectErrorThreshold: {_reconnectErrorThreshold.ToString()}");
 
                         _firstErrorTime = DateTimeOffset.MinValue;
                         _previousErrorTime = DateTimeOffset.MinValue;
@@ -102,7 +101,6 @@ namespace Microsoft.Web.Redis
                 }
             }
         }
-
 
         private void CreateMultiplexer()
         {
@@ -132,6 +130,19 @@ namespace Microsoft.Web.Redis
             }
         }
 
+        public void Dispose()
+        {
+            if (_redisMultiplexer != null && _redisMultiplexer.IsValueCreated)
+            {
+                try
+                {
+                    _redisMultiplexer.Value.Close();
+                }
+                catch (Exception)
+                {
+                    // Ignore exceptions during disposal
+                }
+            }
+        }
     }
-
 }

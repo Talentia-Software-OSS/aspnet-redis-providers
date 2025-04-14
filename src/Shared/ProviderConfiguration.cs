@@ -29,6 +29,11 @@ namespace Microsoft.Web.Redis
         public int OperationTimeoutInMilliSec { get; set; }
         public string ConnectionString { get; set; }
         public int ConnectionPoolSize { get; set; }
+        public int SocketThreads { get; set; }
+        public int SocketManagerOptions { get; set; } //0- no options, 1 - UseHighPrioritySocketThreads, 2 - Use the regular thread-pool for all scheduling. Flag enum
+
+        public const int DefaultSocketThreads = 10;
+        public const int DefaultSocketManagerOptions = 0; 
 
         /* Empty constructor required for testing */
 
@@ -52,8 +57,8 @@ namespace Microsoft.Web.Redis
             SessionStateSection sessionStateSection = (SessionStateSection)WebConfigurationManager.GetSection("system.web/sessionState");
             configuration.SessionTimeout = sessionStateSection.Timeout;
 
-            LogUtility.LogInfo("Host: {0}, Port: {1}, ThrowOnError: {2}, UseSsl: {3}, RetryTimeout: {4}, DatabaseId: {5}, ApplicationName: {6}, RequestTimeout: {7}, SessionTimeout: {8}",
-                                            configuration.Host, configuration.Port, configuration.ThrowOnError, configuration.UseSsl, configuration.RetryTimeout, configuration.DatabaseId, configuration.ApplicationName, configuration.RequestTimeout, configuration.SessionTimeout);
+            LogUtility.LogInfo("Host: {0}, Port: {1}, ThrowOnError: {2}, UseSsl: {3}, RetryTimeout: {4}, DatabaseId: {5}, ApplicationName: {6}, RequestTimeout: {7}, SessionTimeout: {8}, MultiplexerPoolSize: {9}",
+                                            configuration.Host, configuration.Port, configuration.ThrowOnError, configuration.UseSsl, configuration.RetryTimeout, configuration.DatabaseId, configuration.ApplicationName, configuration.RequestTimeout, configuration.SessionTimeout, configuration.ConnectionPoolSize);
             return configuration;
         }
 
@@ -78,7 +83,6 @@ namespace Microsoft.Web.Redis
         private ProviderConfiguration(NameValueCollection config)
         {
             EnableLoggingIfParametersAvailable(config);
-            ConnectionPoolSize = GetIntSettings(config, "ConnectionPoolSize", 5);
             // Get connection host, port and password.
             // host, port, accessKey and ssl are firest fetched from appSettings if not found there than taken from web.config
             ConnectionString = GetConnectionString(config);
@@ -119,6 +123,10 @@ namespace Microsoft.Web.Redis
 
             ConnectionTimeoutInMilliSec = GetIntSettings(config, "connectionTimeoutInMilliseconds", 0);
             OperationTimeoutInMilliSec = GetIntSettings(config, "operationTimeoutInMilliseconds", 0);
+
+            ConnectionPoolSize = GetIntSettings(config, "ConnectionPoolSize", 2);
+            SocketThreads = GetIntSettings(config, "SocketThreads", DefaultSocketThreads); //StackExchange.Redis default is 10
+            SocketManagerOptions = GetIntSettings(config, "SocketManagerOptions", DefaultSocketManagerOptions); 
         }
 
         // 1) Use key available inside AppSettings

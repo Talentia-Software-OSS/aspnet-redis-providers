@@ -16,32 +16,25 @@ namespace Microsoft.Web.Redis
     {
         private ProviderConfiguration _configuration;
         private RedisSharedConnection _sharedConnection;
+        private KeyGenerator _keys;
 
-        public StackExchangeClientConnection(ProviderConfiguration configuration, RedisSharedConnection sharedConnection)
+        public StackExchangeClientConnection(ProviderConfiguration configuration, RedisSharedConnection sharedConnection, KeyGenerator keys)
         {
             _configuration = configuration;
             _sharedConnection = sharedConnection;
+            _keys = keys;
         }
 
         // This is used just by tests
-        public IDatabase RealConnection
-        {
-            get { return _sharedConnection.Multiplexer.Database; }
-        }
+        public IDatabase RealConnection => Multiplexer.Database;
 
-        public ConnectionMultiplexerWrapper Multiplexer => _sharedConnection.Multiplexer;
-
+        public ConnectionMultiplexerWrapper Multiplexer => _sharedConnection.GetMultiplexerBoundToSession(_keys.SessionId);
 
         public async Task<bool> ExpiryAsync(string key, int timeInSeconds)
         {
             TimeSpan timeSpan = new TimeSpan(0, 0, timeInSeconds);
             RedisKey redisKey = key;
             return (bool)await RetryLogicAsync(Multiplexer, async (mx) => await  mx.Database.KeyExpireAsync(redisKey, timeSpan));
-        }
-
-        public async Task<object> EvalAsync(LoadedLuaScript script, object args)
-        {
-            return await RetryLogicAsync(Multiplexer, async (mx) => await script.EvaluateAsync(Multiplexer.Database,args));
         }
 
         public async Task<object> EvalAsync(string script, string[] keyArgs, object[] valueArgs)
@@ -164,11 +157,6 @@ namespace Microsoft.Web.Redis
             Debug.Assert(lockScriptReturnValueArray != null);
             Debug.Assert(lockScriptReturnValueArray[3] != null);
             return (bool)lockScriptReturnValueArray[3];
-        }
-
-        public LoadedLuaScript LoadLuaScript(LuaScript script)
-        {
-            throw new NotImplementedException();
         }
 
         public string GetLockId(object rowDataFromRedis)

@@ -54,8 +54,13 @@ namespace Microsoft.Web.Redis
 
                 if (configuration.OperationTimeoutInMilliSec != 0)
                 {
-                    _configOption.SyncTimeout = configuration.OperationTimeoutInMilliSec;
+                    _configOption.SyncTimeout = configuration.OperationTimeoutInMilliSec; //async timeout follows sync timeout if no explicit value set
                 }
+            }
+            if(configuration.SocketThreads != ProviderConfiguration.DefaultSocketThreads || configuration.SocketManagerOptions != ProviderConfiguration.DefaultSocketManagerOptions)
+            {
+                LogUtility.LogInfo($"Using custom socket manager to connect to Redis. SocketThreads: {configuration.SocketThreads}, SocketManagerOptions: {configuration.SocketManagerOptions}");
+                _configOption.SocketManager = new SocketManager("SessionStateSocketManager", configuration.SocketThreads, (SocketManager.SocketManagerOptions)configuration.SocketManagerOptions);
             }
 
             // Embed Provider Identity in Connection ClientName
@@ -68,21 +73,13 @@ namespace Microsoft.Web.Redis
             _connectionPool = new ConnectionMultiplexerPool(configuration, _configOption);
         }
 
-        public ConnectionMultiplexerWrapper Multiplexer => _connectionPool.GetPooledMultiplexer();
+        public ConnectionMultiplexerWrapper GetMultiplexerBoundToSession(string sessionId) => _connectionPool.GetPooledMultiplexer(sessionId);
+
+        public ConnectionMultiplexerWrapper GetMultiplexerForTesting() => _connectionPool.GetPooledMultiplexer(null);
 
         public void Dispose()
         {
-            //if (_redisMultiplexer != null && _redisMultiplexer.IsValueCreated)
-            //{
-            //    try
-            //    {
-            //        _redisMultiplexer.Value.Close();
-            //    }
-            //    catch (Exception)
-            //    {
-            //        // Ignore exceptions during disposal
-            //    }
-            //}
+           _connectionPool.Dispose(); ;
         }
     }
 }

@@ -22,6 +22,8 @@ namespace Microsoft.Web.Redis
             InternalKey = $"{{{app}_{id}}}_SessionTimeout";
         }
 
+        public string SessionId => id;
+
         public KeyGenerator(string sessionId, string applicationName)
         {
             GenerateKeys(sessionId, applicationName);

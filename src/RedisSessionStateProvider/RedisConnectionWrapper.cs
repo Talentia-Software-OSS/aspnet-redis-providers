@@ -37,7 +37,7 @@ namespace Microsoft.Web.Redis
                 // Increment ref count for better tracking in concurrent scenarios
                 connectionRefCount++;
             }
-            redisConnection = new StackExchangeClientConnection(configuration, sharedConnection);
+            redisConnection = new StackExchangeClientConnection(configuration, sharedConnection, Keys);
         }
 
         // This method will be called by tests to ensure proper cleanup

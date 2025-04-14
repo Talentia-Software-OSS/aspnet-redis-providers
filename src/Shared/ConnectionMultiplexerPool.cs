@@ -6,10 +6,10 @@ using StackExchange.Redis;
 
 namespace Microsoft.Web.Redis
 {
-    public class ConnectionMultiplexerPool
+    public class ConnectionMultiplexerPool : IDisposable
     {
         private readonly List<ConnectionMultiplexerWrapper> _pool;
-        private int _poolSize;
+        private readonly int _poolSize;
         private readonly Random _random = new Random();
 
         internal ConnectionMultiplexerPool(ProviderConfiguration configuration, ConfigurationOptions configOption)
@@ -26,16 +26,37 @@ namespace Microsoft.Web.Redis
         /// Get a connection multiplexer from the pool.
         /// </summary>
         /// <returns></returns>
-        public ConnectionMultiplexerWrapper GetPooledMultiplexer()
+        public ConnectionMultiplexerWrapper GetPooledMultiplexer(string sessionId = null)
         {
-            var indexToPick = _random.Next(_poolSize - 1);
+            var indexToPick = GetPoolIndex(sessionId);
             return _pool[indexToPick];
-            //ConnectionMultiplexerWrapper connection;
-            //while (!_pool.TryDequeue(out connection)) continue;
-            //_pool.Enqueue(connection);
-            //return connection;
-
         }
-      
+
+        private int GetPoolIndex(string sessionId = null)
+        {
+            if (_poolSize == 1) return 0; // If only one connection always use that one
+
+            if (sessionId != null) // If sessionId is provided, use it to determine the pool index ( keep the same multiplexer for the same sessionId )
+            {
+                //compute a simple hash and use it to determine the pool index
+                int hash = 0;
+                foreach (var c in sessionId)
+                {
+                    hash += c;
+                }
+
+                return hash % _poolSize;
+            }
+            //testing scenarios
+            return _random.Next(_poolSize);
+        }
+
+        public void Dispose()
+        {
+            foreach (var multiplexerWrapper in _pool)
+            {
+                multiplexerWrapper.Dispose();
+            }
+        }
     }
 }

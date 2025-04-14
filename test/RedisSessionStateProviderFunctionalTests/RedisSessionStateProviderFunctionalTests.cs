@@ -159,7 +159,7 @@ namespace Microsoft.Web.Redis.FunctionalTests
 
         private IDatabase GetRealRedisConnection()
         {
-            return RedisConnectionWrapper.sharedConnection.Multiplexer.Database;
+            return RedisConnectionWrapper.sharedConnection.GetMultiplexerForTesting().Database;
         }
 
         //[Fact(Skip = "Only used to evaluate performance")]

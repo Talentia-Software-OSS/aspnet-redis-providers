@@ -35,7 +35,7 @@ namespace Microsoft.Web.Redis.Tests
             configuration.OperationTimeoutInMilliSec = 1000;
             configuration.RetryTimeout = TimeSpan.Zero;
             configuration.ThrowOnError = true;
-            configuration.ConnectionPoolSize = 10;
+            configuration.ConnectionPoolSize = 1;
             return configuration;
         }
 

@@ -24,7 +24,7 @@ namespace Microsoft.Web.Redis
     /// </summary>
     public class StickyAffinitySessionStateProvider : RedisSessionStateProvider
     {
-        private static readonly ObjectCache SessionCache = MemoryCache.Default;
+        private static readonly ObjectCache SessionCache = new MemoryCache("StickyAffinitySessionStateProvider");
         private static readonly CacheItemPolicy DefaultPolicy = new CacheItemPolicy { SlidingExpiration = TimeSpan.FromMinutes(20) };
         
         private static Timer _bulkUpdateTimer;

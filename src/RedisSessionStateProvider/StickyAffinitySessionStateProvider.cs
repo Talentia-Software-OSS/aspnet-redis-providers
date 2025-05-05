@@ -6,6 +6,8 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Specialized;
+using System.Linq;
+using System.Runtime.Caching;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
@@ -22,11 +24,11 @@ namespace Microsoft.Web.Redis
     /// </summary>
     public class StickyAffinitySessionStateProvider : RedisSessionStateProvider
     {
-        protected static readonly ConcurrentDictionary<string, Tuple<ISessionStateItemCollection, DateTime>> MemoryCache 
-            = new ConcurrentDictionary<string, Tuple<ISessionStateItemCollection, DateTime>>();
+        private static readonly ObjectCache SessionCache = MemoryCache.Default;
+        private static readonly CacheItemPolicy DefaultPolicy = new CacheItemPolicy { SlidingExpiration = TimeSpan.FromMinutes(20) };
         
         private static Timer _bulkUpdateTimer;
-        private static ConcurrentBag<string> _pendingUpdates = new ConcurrentBag<string>();
+        private static ConcurrentDictionary<string, DateTime> _pendingUpdates = new ConcurrentDictionary<string, DateTime>();
         
         protected bool EnableMemoryCache = true;
         protected bool EnableBulkUpdates = false;
@@ -45,6 +47,9 @@ namespace Microsoft.Web.Redis
             MemoryCacheExpiryMinutes = GetIntConfig(config, "memoryCacheExpiryMinutes", 20);
             UseMemoryCacheForExclusiveAccess = GetBoolConfig(config, "useMemoryCacheForExclusiveAccess", true);
             
+            // Update default cache policy with configured expiry
+            DefaultPolicy.SlidingExpiration = TimeSpan.FromMinutes(MemoryCacheExpiryMinutes);
+            
             // Initialize bulk update timer if enabled
             if (EnableBulkUpdates && _bulkUpdateTimer == null)
             {
@@ -57,13 +62,6 @@ namespace Microsoft.Web.Redis
                             TimeSpan.FromSeconds(BulkUpdateIntervalSeconds));
                     }
                 }
-            }
-            
-            // Call cleanup on a timer to remove expired entries
-            if (EnableMemoryCache)
-            {
-                Timer cleanupTimer = new Timer(state => CleanupExpiredEntries(), null, 
-                    TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
             }
             
             LogUtility.LogInfo("StickyAffinitySessionStateProvider initialized with: enableMemoryCache={0}, enableBulkUpdates={1}, " +
@@ -99,13 +97,15 @@ namespace Microsoft.Web.Redis
         
         private void ProcessBulkUpdates(object state)
         {
-            if (!_pendingUpdates.IsEmpty)
+            if (_pendingUpdates.Count > 0)
             {
                 string[] ids;
                 lock (_pendingUpdates)
                 {
-                    ids = _pendingUpdates.ToArray();
-                    _pendingUpdates = new ConcurrentBag<string>();
+                    // Get list of IDs to process
+                    ids = _pendingUpdates.Keys.ToArray();
+                    // Clear the pending updates collection
+                    _pendingUpdates.Clear();
                 }
                 
                 LogUtility.LogInfo("StickyAffinity ProcessBulkUpdates => Processing {0} pending updates", ids.Length);
@@ -115,8 +115,10 @@ namespace Microsoft.Web.Redis
                     try
                     {
                         // Get the session data from memory cache
-                        Tuple<ISessionStateItemCollection, DateTime> cachedItem;
-                        if (MemoryCache.TryGetValue(id, out cachedItem) && cachedItem.Item2 > DateTime.UtcNow)
+                        string cacheKey = GetCacheKey(id);
+                        var sessionData = SessionCache.Get(cacheKey) as ISessionStateItemCollection;
+                        
+                        if (sessionData != null)
                         {
                             // Get a Redis connection for this session
                             GetAccessToStore(id);
@@ -126,7 +128,7 @@ namespace Microsoft.Web.Redis
                             int timeoutInSeconds = MemoryCacheExpiryMinutes * 60;
                             
                             // Call SetAsync asynchronously but don't wait for it
-                            var _ = cache.SetAsync(cachedItem.Item1, timeoutInSeconds);
+                            var _ = cache.SetAsync(sessionData, timeoutInSeconds);
                             
                             LogUtility.LogInfo("StickyAffinity ProcessBulkUpdates => Updated Redis for Id: {0}", id);
                         }
@@ -143,23 +145,15 @@ namespace Microsoft.Web.Redis
         {
             if (EnableBulkUpdates)
             {
-                _pendingUpdates.Add(id);
+                // Only add or update the timestamp for this ID
+                _pendingUpdates[id] = DateTime.UtcNow;
+                LogUtility.LogInfo("StickyAffinity AddToPendingUpdates => Added/Updated session Id: {0} for bulk update", id);
             }
         }
         
-        private void CleanupExpiredEntries()
+        private string GetCacheKey(string sessionId)
         {
-            // Remove expired entries from memory cache
-            DateTime now = DateTime.UtcNow;
-            foreach (var entry in MemoryCache)
-            {
-                if (entry.Value.Item2 < now)
-                {
-                    Tuple<ISessionStateItemCollection, DateTime> removed;
-                    MemoryCache.TryRemove(entry.Key, out removed);
-                    LogUtility.LogInfo("Removed expired session from memory cache: {0}", entry.Key);
-                }
-            }
+            return "Session_" + sessionId;
         }
         
         public override async Task<GetItemResult> GetItemAsync(HttpContextBase context, string id, CancellationToken cancellationToken)
@@ -170,8 +164,10 @@ namespace Microsoft.Web.Redis
                 {
                     LogUtility.LogInfo("StickyAffinity GetItem => Checking memory cache for Session Id: {0}", id);
                     
-                    Tuple<ISessionStateItemCollection, DateTime> cachedItem;
-                    if (MemoryCache.TryGetValue(id, out cachedItem) && cachedItem.Item2 > DateTime.UtcNow)
+                    string cacheKey = GetCacheKey(id);
+                    var sessionItems = SessionCache.Get(cacheKey) as ISessionStateItemCollection;
+                    
+                    if (sessionItems != null)
                     {
                         // Return from memory cache
                         LogUtility.LogInfo("StickyAffinity GetItem => Session found in memory cache for Id: {0}", id);
@@ -183,7 +179,7 @@ namespace Microsoft.Web.Redis
                         SessionStateActions actions = SessionStateActions.None;
                         
                         var sessionData = new SessionStateStoreData(
-                            cachedItem.Item1, 
+                            sessionItems, 
                             new HttpStaticObjectsCollection(),
                             MemoryCacheExpiryMinutes);
                         
@@ -221,9 +217,13 @@ namespace Microsoft.Web.Redis
         {
             if (sessionItems != null)
             {
-                // Store in memory cache with expiry time
-                DateTime expiryTime = DateTime.UtcNow.AddMinutes(timeoutMinutes);
-                MemoryCache[id] = new Tuple<ISessionStateItemCollection, DateTime>(sessionItems, expiryTime);
+                string cacheKey = GetCacheKey(id);
+                var policy = new CacheItemPolicy
+                {
+                    SlidingExpiration = TimeSpan.FromMinutes(timeoutMinutes)
+                };
+                
+                SessionCache.Set(cacheKey, sessionItems, policy);
             }
         }
         
@@ -235,8 +235,10 @@ namespace Microsoft.Web.Redis
                 {
                     LogUtility.LogInfo("StickyAffinity GetItemExclusive => Checking memory cache for Session Id: {0}", id);
                     
-                    Tuple<ISessionStateItemCollection, DateTime> cachedItem;
-                    if (MemoryCache.TryGetValue(id, out cachedItem) && cachedItem.Item2 > DateTime.UtcNow)
+                    string cacheKey = GetCacheKey(id);
+                    var sessionItems = SessionCache.Get(cacheKey) as ISessionStateItemCollection;
+                    
+                    if (sessionItems != null)
                     {
                         // We still need to acquire a lock in Redis to maintain compatibility with multiple servers
                         // and to support failover scenarios, but we'll use the data from memory if available
@@ -266,7 +268,7 @@ namespace Microsoft.Web.Redis
                         
                         // Return memory cached data with the Redis lock
                         var sessionData = new SessionStateStoreData(
-                            cachedItem.Item1, 
+                            sessionItems, 
                             new HttpStaticObjectsCollection(),
                             MemoryCacheExpiryMinutes);
                         
@@ -309,25 +311,39 @@ namespace Microsoft.Web.Redis
             {
                 LogUtility.LogInfo("StickyAffinity SetAndReleaseItemExclusive => Session Id: {0}, Session provider object: {1}.", id, this.GetHashCode());
                 
-                // Call the base implementation to update Redis
-                await base.SetAndReleaseItemExclusiveAsync(context, id, item, lockId, newItem, cancellationToken);
-                
-                // Update the memory cache with the new data
-                if (EnableMemoryCache && item != null && item.Items != null)
+                if (EnableBulkUpdates && !newItem)
                 {
-                    StoreInMemoryCache(id, item.Items as ISessionStateItemCollection, item.Timeout);
-                    LogUtility.LogInfo("StickyAffinity SetAndReleaseItemExclusive => Updated memory cache for Id: {0}", id);
+                    // When bulk updates enabled, we only need to release the lock in Redis
+                    // and store the data for a later bulk update
+                    GetAccessToStore(id);
+                    await cache.ReleaseLockIfLockIdMatchAsync(lockId, item.Timeout * 60);
+                    
+                    // Update the memory cache with the new data
+                    if (EnableMemoryCache && item != null && item.Items != null)
+                    {
+                        StoreInMemoryCache(id, item.Items as ISessionStateItemCollection, item.Timeout);
+                        LogUtility.LogInfo("StickyAffinity SetAndReleaseItemExclusive => Updated memory cache for Id: {0}", id);
+                    }
+                    
+                    // Add to pending updates
+                    AddToPendingUpdates(id);
+                }
+                else
+                {
+                    // For new items or when bulk updates disabled, use the standard behavior
+                    await base.SetAndReleaseItemExclusiveAsync(context, id, item, lockId, newItem, cancellationToken);
+                    
+                    // Update the memory cache with the new data
+                    if (EnableMemoryCache && item != null && item.Items != null)
+                    {
+                        StoreInMemoryCache(id, item.Items as ISessionStateItemCollection, item.Timeout);
+                        LogUtility.LogInfo("StickyAffinity SetAndReleaseItemExclusive => Updated memory cache for Id: {0}", id);
+                    }
                 }
                 
                 // Clear session data to prevent multiple releases
                 sessionId = null;
                 sessionLockId = null;
-                
-                // Track for bulk updates if enabled
-                if (EnableBulkUpdates)
-                {
-                    _pendingUpdates.Add(id);
-                }
             }
             catch (Exception e)
             {
@@ -347,8 +363,8 @@ namespace Microsoft.Web.Redis
                 // Remove from memory cache first
                 if (EnableMemoryCache)
                 {
-                    Tuple<ISessionStateItemCollection, DateTime> removed;
-                    MemoryCache.TryRemove(id, out removed);
+                    string cacheKey = GetCacheKey(id);
+                    SessionCache.Remove(cacheKey);
                     LogUtility.LogInfo("StickyAffinity RemoveItem => Removed from memory cache for Id: {0}", id);
                 }
                 
@@ -370,20 +386,8 @@ namespace Microsoft.Web.Redis
         {
             try
             {
-                // Update expiry in memory cache
-                if (EnableMemoryCache)
-                {
-                    Tuple<ISessionStateItemCollection, DateTime> cacheEntry;
-                    if (MemoryCache.TryGetValue(id, out cacheEntry))
-                    {
-                        // Update expiry time
-                        DateTime newExpiry = DateTime.UtcNow.AddMinutes(MemoryCacheExpiryMinutes);
-                        MemoryCache[id] = new Tuple<ISessionStateItemCollection, DateTime>(cacheEntry.Item1, newExpiry);
-                        LogUtility.LogInfo("StickyAffinity ResetItemTimeout => Updated expiry in memory cache for Id: {0}", id);
-                    }
-                }
-                
-                // Update expiry in Redis
+                // With MemoryCache, sliding expiration will automatically handle timeout resets
+                // when the item is accessed, but we'll update Redis as well
                 await base.ResetItemTimeoutAsync(context, id, cancellationToken);
             }
             catch (Exception e)
@@ -401,15 +405,18 @@ namespace Microsoft.Web.Redis
         {
             try
             {
+                // Process any remaining updates before shutting down
+                if (_pendingUpdates.Count > 0)
+                {
+                    ProcessBulkUpdates(null);
+                }
+                
                 // Dispose the bulk update timer if it exists
                 if (_bulkUpdateTimer != null)
                 {
                     _bulkUpdateTimer.Dispose();
                     _bulkUpdateTimer = null;
                 }
-                
-                // Clear the memory cache
-                MemoryCache.Clear();
             }
             finally
             {

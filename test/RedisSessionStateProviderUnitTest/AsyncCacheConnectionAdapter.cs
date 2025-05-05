@@ -1,6 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using System.Web.SessionState;
+using Microsoft.Web.Redis;
 
 namespace Microsoft.Web.Redis.Tests
 {
@@ -9,7 +10,7 @@ namespace Microsoft.Web.Redis.Tests
     /// </summary>
     internal class AsyncCacheConnectionAdapter : ICacheConnection
     {
-        public KeyGenerator Keys { get; set; }
+        public Microsoft.Web.Redis.KeyGenerator Keys { get; set; }
 
         public virtual Task<TimeSpan> GetLockAgeAsync(object lockId)
         {

@@ -54,9 +54,19 @@ namespace Microsoft.Web.Redis.Tests
         }
 
         // Helper method to get default configuration utility
-        public static ConfigUtility GetDefaultConfigUtility()
+        public static ProviderConfiguration GetDefaultConfigUtility()
         {
-            return new ConfigUtility(100, false, false, 500, 3000, 10000, false, false, "DefaultAppName");
+            var config = new ProviderConfiguration();
+            config.RetryTimeout = TimeSpan.FromMilliseconds(100);
+            config.ThrowOnError = false;
+            config.ApplicationName = "DefaultAppName";
+            config.Host = "localhost";
+            config.Port = 6379;
+            config.RequestTimeout = TimeSpan.FromSeconds(30);
+            config.SessionTimeout = TimeSpan.FromMinutes(20);
+            config.ConnectionTimeoutInMilliSec = 500;
+            config.OperationTimeoutInMilliSec = 3000;
+            return config;
         }
     }
 

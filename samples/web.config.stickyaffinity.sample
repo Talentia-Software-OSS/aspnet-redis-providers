@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    This is a sample web.config file showing how to configure the StickyAffinitySessionStateProvider
+    This provider extends the standard RedisSessionStateProvider with in-memory caching capabilities,
+    optimized for environments with sticky sessions (session affinity).
+    
+    Benefits:
+    - Reduces Redis read operations when session data is frequently accessed
+    - Can optionally batch Redis write operations to improve performance
+    - Session data is always available even during brief Redis outages
+    - Configurable options for memory cache behavior
+    
+    Key features:
+    - enableMemoryCache: Controls whether the memory cache is used (default: true)
+    - enableBulkUpdates: Controls whether Redis updates are batched or immediate (default: false)
+    - bulkUpdateIntervalSeconds: How often the bulk update timer runs (default: 60 seconds)
+    - memoryCacheExpiryMinutes: How long items remain in memory cache (default: 20 minutes)
+    - useMemoryCacheForExclusiveAccess: Whether to use memory cache for GetItemExclusive calls (default: true)
+-->
+<configuration>
+  <appSettings>
+    <!-- Redis Connection String - can also be in the session state section -->
+    <add key="RedisConnection" value="localhost:6379,ssl=false" />
+  </appSettings>
+  <system.web>
+    <compilation debug="true" targetFramework="4.7.2" />
+    <httpRuntime targetFramework="4.7.2" />
+    <sessionState mode="Custom" customProvider="StickyAffinitySessionStateProvider">
+      <providers>
+        <!-- 
+        Specify the StickyAffinitySessionStateProvider type instead of the standard RedisSessionStateProvider
+        Configure Redis connection parameters just like the standard provider
+        -->
+        <add name="StickyAffinitySessionStateProvider" 
+             type="Microsoft.Web.Redis.StickyAffinitySessionStateProvider" 
+             connectionString="$(RedisConnection)" 
+             applicationName="MyApp" 
+             databaseId="0" 
+             throwOnError="true"
+             retryTimeoutInMilliseconds="5000"
+             
+             <!-- StickyAffinity provider specific settings -->
+             enableMemoryCache="true"
+             enableBulkUpdates="true" 
+             bulkUpdateIntervalSeconds="60"
+             memoryCacheExpiryMinutes="20"
+             useMemoryCacheForExclusiveAccess="true"
+        />
+      </providers>
+    </sessionState>
+  </system.web>
+</configuration> 

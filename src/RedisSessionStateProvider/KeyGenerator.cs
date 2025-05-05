@@ -7,7 +7,7 @@ using System;
 
 namespace Microsoft.Web.Redis
 {
-    internal class KeyGenerator
+    public class KeyGenerator
     {
         private string id;
         public string DataKey { get; private set; }

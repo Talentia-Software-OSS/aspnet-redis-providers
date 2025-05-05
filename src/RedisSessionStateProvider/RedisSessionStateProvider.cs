@@ -53,7 +53,7 @@ namespace Microsoft.Web.Redis
             }
         }
 
-        private void GetAccessToStore(string id)
+        protected void GetAccessToStore(string id)
         {
             if (cache == null)
             {
